@@ -1,4 +1,4 @@
-name: rainbow
+name: RS-Rainbow
 channels:
   - pytorch
 dependencies:

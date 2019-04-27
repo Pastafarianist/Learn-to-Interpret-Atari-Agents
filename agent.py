@@ -3,7 +3,7 @@ import random
 import torch
 from torch import optim
 
-from model import DQN
+from model import DQN, DQN_rs, DQN_rs_sig
 
 
 class Agent():
@@ -17,14 +17,25 @@ class Agent():
     self.batch_size = args.batch_size
     self.n = args.multi_step
     self.discount = args.discount
-
-    self.online_net = DQN(args, self.action_space).to(device=args.device)
+    self.model_type = args.model_type
+    self.game = args.game
+    
+    if self.model_type == 'DQN':
+        self.online_net = DQN(args, self.action_space).to(device=args.device)
+        self.target_net = DQN(args, self.action_space).to(device=args.device)
+    elif self.model_type == 'DQN_rs': 
+        self.online_net = DQN_rs(args, self.action_space).to(device=args.device)
+        self.target_net = DQN_rs(args, self.action_space).to(device=args.device)
+    elif self.model_type == 'DQN_rs_sig':
+        self.online_net = DQN_rs_sig(args, self.action_space).to(device=args.device)
+        self.target_net = DQN_rs_sig(args, self.action_space).to(device=args.device)
+    
+    
     if args.model and os.path.isfile(args.model):
       # Always load tensors onto CPU by default, will shift to GPU if necessary
       self.online_net.load_state_dict(torch.load(args.model, map_location='cpu'))
     self.online_net.train()
 
-    self.target_net = DQN(args, self.action_space).to(device=args.device)
     self.update_target_net()
     self.target_net.train()
     for param in self.target_net.parameters():
@@ -39,8 +50,56 @@ class Agent():
   # Acts based on single state (no batch)
   def act(self, state):
     with torch.no_grad():
-      return (self.online_net(state.unsqueeze(0)) * self.support).sum(2).argmax(1).item()
-
+      return (self.online_net(state.unsqueeze(0)) * self.support).sum(2).argmax(1).item() 
+      # support (1-D of size self.atoms) is broadcasted to returned Q; Returned Q has shape: (batch, self.action_space, self.atoms)
+  
+  def get_importance(self, state, requires_grad=False):
+    if requires_grad:
+      state.requires_grad_()
+      _, importance = self.online_net.visual_forward(state.unsqueeze(0))
+    else:
+      with torch.no_grad():
+        _, importance = self.online_net.visual_forward(state.unsqueeze(0))
+    return importance
+  
+  def conv_filter_forward(self, state):
+    state.requires_grad_()
+    return self.online_net.neuron_forward(state.unsqueeze(0))
+  
+  def v_forward(self, state):
+    state.requires_grad_()
+    v = self.online_net.vaq_forward(state.unsqueeze(0))[0] #torch.Size([51])
+    return v.sum(-1) #(self.atoms) -> scalar
+  
+  def a_forward(self, state):
+    state.requires_grad_()
+    return (self.online_net.vaq_forward(state.unsqueeze(0))[1] * self.support).sum(2).squeeze() #(self.action_space)
+  
+  def q_forward(self, state):
+    state.requires_grad_()
+    return (self.online_net.vaq_forward(state.unsqueeze(0))[2] * self.support).sum(2).squeeze() #(self.action_space)
+  
+  def get_saliency_masks(self, state):
+    state.requires_grad_()
+    importance = self.online_net.neuron_forward(state.unsqueeze(0))
+    importance = importance.squeeze() # (1,2,7,7) -> (2,7,7)
+    importance[0].max().backward(retain_graph=True)
+    saliency_0 = torch.empty_like(state.grad.data)
+    saliency_0 = state.grad.data.clone()
+    state.grad.data.zero_()
+    self.online_net.zero_grad() # zeros grads of all module parameters
+    
+    importance[1].max().backward(retain_graph=False)
+    saliency_1 = state.grad.data
+    self.online_net.zero_grad()
+    return saliency_0, saliency_1
+  
+  def get_saliency(self, state):
+    state.requires_grad_()
+    ((self.online_net(state.unsqueeze(0)) * self.support).sum(2).max(1)[0]).backward()
+    self.online_net.zero_grad()
+    return state.grad
+  
   # Acts with an ε-greedy policy (used for evaluation only)
   def act_e_greedy(self, state, epsilon=0.001):  # High ε can reduce evaluation scores drastically
     return random.randrange(self.action_space) if random.random() < epsilon else self.act(state)
@@ -89,8 +148,8 @@ class Agent():
     self.target_net.load_state_dict(self.online_net.state_dict())
 
   # Save model parameters on current device (don't move model between devices)
-  def save(self, path):
-    torch.save(self.online_net.state_dict(), os.path.join(path, 'model.pth'))
+  def save(self, path, frame=''):
+    torch.save(self.online_net.state_dict(), os.path.join(path, self.game+'_'+self.model_type+frame+'_model.pth'))
 
   # Evaluates Q-value based on single state (no batch)
   def evaluate_q(self, state):

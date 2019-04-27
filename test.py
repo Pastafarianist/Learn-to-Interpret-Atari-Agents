@@ -26,7 +26,7 @@ def test(args, T, dqn, val_mem, evaluate=False):
       if done:
         state, reward_sum, done = env.reset(), 0, False
 
-      action = dqn.act_e_greedy(state)  # Choose an action ε-greedily
+      action = dqn.act_e_greedy(state)  # Choose an action ε-greedily epsilon=0.001
       state, reward, done = env.step(action)  # Step
       reward_sum += reward
       if args.render:
@@ -48,14 +48,17 @@ def test(args, T, dqn, val_mem, evaluate=False):
     Qs.append(T_Qs)
 
     # Plot
-    _plot_line(Ts, rewards, 'Reward', path='results')
-    _plot_line(Ts, Qs, 'Q', path='results')
+    _plot_line(Ts, rewards, args.game+'_'+args.model_type+'_Reward', path='results')
+    _plot_line(Ts, Qs, args.game+'_'+args.model_type+'_Q', path='results')
 
     # Save model parameters if improved
-    if avg_reward > best_avg_reward:
+    if avg_reward >= best_avg_reward:
       best_avg_reward = avg_reward
       dqn.save('results')
 
+    if (T%10e6)==0:
+      dqn.save('results', '_'+str(int(T)))
+  
   # Return average reward and Q-value
   return avg_reward, avg_Q
 
@@ -78,3 +81,4 @@ def _plot_line(xs, ys_population, title, path=''):
     'data': [trace_upper, trace_mean, trace_lower, trace_min, trace_max],
     'layout': dict(title=title, xaxis={'title': 'Step'}, yaxis={'title': title})
   }, filename=os.path.join(path, title + '.html'), auto_open=False)
+
